@@ -11,11 +11,35 @@ ESP8266WiFiMulti WiFiMulti;
 
 #include <MicroOcpp.h>
 
+#include <CSE7766.h>
+
 #define STASSID "YOUR_WIFI_SSID"
 #define STAPSK  "YOUR_WIFI_PW"
 
 #define OCPP_BACKEND_URL   "ws://echo.websocket.events"
 #define OCPP_CHARGE_BOX_ID ""
+
+#if RUN_ON_SONOFF
+#define LED 13
+#define LED_ON LOW
+#define LED_OFF HIGH
+#define RELAY 12
+#define RELAY_ON HIGH
+#define RELAY_OFF LOW
+#define RESET_BTN 0
+#define RESET_BTN_DOWN LOW
+#else
+// WHEN ON NodeMCU, use this
+#define LED 2
+//#define LED 13
+#define LED_ON LOW
+#define LED_OFF HIGH
+#define RELAY 16
+#define RELAY_ON HIGH
+#define RELAY_OFF LOW
+#define RESET_BTN 10
+#define RESET_BTN_DOWN LOW
+#endif
 
 //
 //  Settings which worked for my SteVe instance:
@@ -25,11 +49,26 @@ ESP8266WiFiMulti WiFiMulti;
 
 void setup() {
 
+    pinMode(LED, OUTPUT);
+    pinMode(RELAY, OUTPUT);
+    pinMode(RESET_BTN, INPUT);
+    digitalWrite(RELAY, RELAY_OFF);
+
     /*
      * Initialize Serial and WiFi
      */ 
-
+#if RUN_ON_SONOFF
+    CSE7766_initialize();
+#else
     Serial.begin(115200);
+#endif
+
+    for (uint8_t t = 4; t > 0; t--) {
+        digitalWrite(LED, LED_ON);
+        delay(100);
+        digitalWrite(LED, LED_OFF);
+        delay(300);
+    }
 
     Serial.print(F("[main] Wait for WiFi: "));
 
@@ -51,6 +90,13 @@ void setup() {
 
     Serial.println(F(" connected!"));
 
+    for (uint8_t t = 4; t > 0; t--) {
+        digitalWrite(LED, LED_ON);
+        delay(100);
+        digitalWrite(LED, LED_OFF);
+        delay(100);
+    }
+
     /*
      * Initialize the OCPP library
      */
@@ -61,17 +107,31 @@ void setup() {
      */
     setEnergyMeterInput([]() {
         //take the energy register of the main electricity meter and return the value in watt-hours
-        return 0.f;
+        return CSE7766_readEnergy();
     });
+
+    setPowerMeterInput([]() {
+        //take the energy register of the main electricity meter and return the value in watt-hours
+        return CSE7766_readActivePower();
+    });
+
+    addMeterValueInput([]() {
+            //take the energy register of the main electricity meter and return the value in watt-hours
+            return CSE7766_readVoltage();
+        },
+        "Voltage",
+        "V");
+
+    addMeterValueInput([]() {
+            //take the energy register of the main electricity meter and return the value in watt-hours
+            return CSE7766_readCurrent();
+        },
+        "Current.Import",
+        "A");
 
     setSmartChargingCurrentOutput([](float limit) {
         //set the SAE J1772 Control Pilot value here
         Serial.printf("[main] Smart Charging allows maximum charge rate: %.0f\n", limit);
-    });
-
-    setConnectorPluggedInput([]() {
-        //return true if an EV is plugged to this EVSE
-        return false;
     });
 
     //... see MicroOcpp.h for more settings
@@ -84,13 +144,17 @@ void loop() {
      */
     mocpp_loop();
 
+    CSE7766_loop();
+
     /*
      * Energize EV plug if OCPP transaction is up and running
      */
     if (ocppPermitsCharge()) {
         //OCPP set up and transaction running. Energize the EV plug here
+        digitalWrite(RELAY, RELAY_ON);
     } else {
         //No transaction running at the moment. De-energize EV plug
+        digitalWrite(RELAY, RELAY_OFF);
     }
 
     /*
