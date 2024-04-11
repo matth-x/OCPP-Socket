@@ -9,17 +9,27 @@ ESP8266WiFiMulti WiFiMulti;
 #error only ESP32 or ESP8266 supported at the moment
 #endif
 
-#include <MicroOcpp.h>
-
 #include <CSE7766.h>
+
+#include <MicroOcpp.h>
+#include <MicroOcpp/Core/Configuration.h>
 
 #define STASSID "YOUR_WIFI_SSID"
 #define STAPSK  "YOUR_WIFI_PW"
 
 #define OCPP_BACKEND_URL   "ws://echo.websocket.events"
 #define OCPP_CHARGE_BOX_ID ""
+#define OCPP_AUTH_KEY      ""
 
-#if RUN_ON_SONOFF
+#define BOARD_SONOFF_POW_R2_PROD 0 // Sonoff powered by live wire (CAUTION - never plug USB and power inlet at the same time!)
+#define BOARD_SONOFF_POW_R2_DEV  1 // Sonoff connected to computer via USB
+#define BOARD_NODEMCU            2
+
+#ifndef USE_BOARD
+#define USE_BOARD BOARD_SONOFF_POW_R2_PROD
+#endif
+
+#if USE_BOARD == BOARD_SONOFF_POW_R2_PROD || USE_BOARD == BOARD_SONOFF_POW_R2_DEV
 #define LED 13
 #define LED_ON LOW
 #define LED_OFF HIGH
@@ -28,10 +38,9 @@ ESP8266WiFiMulti WiFiMulti;
 #define RELAY_OFF LOW
 #define RESET_BTN 0
 #define RESET_BTN_DOWN LOW
-#else
+#elif USE_BOARD == BOARD_NODEMCU
 // WHEN ON NodeMCU, use this
 #define LED 2
-//#define LED 13
 #define LED_ON LOW
 #define LED_OFF HIGH
 #define RELAY 16
@@ -41,11 +50,23 @@ ESP8266WiFiMulti WiFiMulti;
 #define RESET_BTN_DOWN LOW
 #endif
 
+#define PN532_USE
+
+#ifdef PN532_USE
+#include "pn532.h"
+#endif
+
 //
 //  Settings which worked for my SteVe instance:
 //
 //#define OCPP_BACKEND_URL   "ws://192.168.178.100:8180/steve/websocket/CentralSystemService"
 //#define OCPP_CHARGE_BOX_ID "esp-charger"
+
+float g_trackSmartChargingCurrent = 32.f;
+bool g_relayEnabled = false;
+
+ulong cse7766_lastEnergyUpdate = 0;
+float cse7766_energy_wh = 0.f;
 
 void setup() {
 
@@ -57,10 +78,25 @@ void setup() {
     /*
      * Initialize Serial and WiFi
      */ 
-#if RUN_ON_SONOFF
+#if USE_BOARD == BOARD_SONOFF_POW_R2_PROD
     CSE7766_initialize();
 #else
     Serial.begin(115200);
+#endif
+
+#ifdef PN532_USE
+    pn532_init([] (String idTag) {
+        Serial.printf("[main] Idtag detected! %s\n", idTag.c_str());
+        if (!getOcppContext()) {
+            return;
+        }
+
+        if (getTransactionIdTag()) {
+            endTransaction(idTag.c_str());
+        } else {
+            beginTransaction(idTag.c_str());
+        }
+    });
 #endif
 
     for (uint8_t t = 4; t > 0; t--) {
@@ -70,9 +106,23 @@ void setup() {
         delay(300);
     }
 
+#if 1
+    MicroOcpp::configuration_init(MicroOcpp::makeDefaultFilesystemAdapter(MicroOcpp::FilesystemOpt::Use_Mount_FormatOnFail));
+
+    auto wifiSSID = MicroOcpp::declareConfiguration<const char*>("Cst_WiFiSSID", STASSID, "ws-conn.jsn", false, true);
+    auto wifiPASS = MicroOcpp::declareConfiguration<const char*>("Cst_WiFiPASS", STAPSK, "ws-conn.jsn", false, true);
+
+    auto backendUrl = MicroOcpp::declareConfiguration<const char*>("Cst_BackendUrl", OCPP_BACKEND_URL, "ws-conn.jsn", false, true);
+    auto cbId = MicroOcpp::declareConfiguration<const char*>("Cst_ChargeBoxId", OCPP_CHARGE_BOX_ID, "ws-conn.jsn", false, true);
+    auto authKey = MicroOcpp::declareConfiguration<const char*>("AuthorizationKey", OCPP_AUTH_KEY, "ws-conn.jsn", false, true);
+
+    MicroOcpp::configuration_load("ws-conn.jsn");
+#endif
+
     Serial.print(F("[main] Wait for WiFi: "));
 
 #if defined(ESP8266)
+    //WiFiMulti.addAP(wifiSSID->getString(), wifiPASS->getString());
     WiFiMulti.addAP(STASSID, STAPSK);
     while (WiFiMulti.run() != WL_CONNECTED) {
         Serial.print('.');
@@ -100,14 +150,23 @@ void setup() {
     /*
      * Initialize the OCPP library
      */
-    mocpp_initialize(OCPP_BACKEND_URL, OCPP_CHARGE_BOX_ID, "My Charging Station", "My company name");
-
+    mocpp_initialize(
+            backendUrl->getString(),
+            cbId->getString(),
+            "My Charging Station",
+            "My company name", 
+            MicroOcpp::FilesystemOpt::Use_Mount_FormatOnFail,
+            authKey->getString());
     /*
      * Integrate OCPP functionality. You can leave out the following part if your EVSE doesn't need it.
      */
+    setEvseReadyInput([]() {
+        return g_relayEnabled;
+    });
+
     setEnergyMeterInput([]() {
         //take the energy register of the main electricity meter and return the value in watt-hours
-        return CSE7766_readEnergy();
+        return cse7766_energy_wh;
     });
 
     setPowerMeterInput([]() {
@@ -128,10 +187,21 @@ void setup() {
         },
         "Current.Import",
         "A");
+    
+    addMeterValueInput([]() {
+            //ESP8266 free heap
+            return ESP.getFreeHeap();
+        },
+        "Device.FreeHeap",
+        "B");
 
     setSmartChargingCurrentOutput([](float limit) {
         //set the SAE J1772 Control Pilot value here
-        Serial.printf("[main] Smart Charging allows maximum charge rate: %.0f\n", limit);
+        g_trackSmartChargingCurrent = limit > -0.001f ? limit : 32.f;
+    });
+
+    setOnResetExecute([] (bool isHard) {
+        ESP.reset();
     });
 
     //... see MicroOcpp.h for more settings
@@ -146,52 +216,29 @@ void loop() {
 
     CSE7766_loop();
 
+    auto t_now = millis();
+    if (t_now - cse7766_lastEnergyUpdate >= 5000) {
+        float dt = (float) (t_now - cse7766_lastEnergyUpdate) * 0.001f;
+        cse7766_lastEnergyUpdate = t_now;
+
+        cse7766_energy_wh += dt * CSE7766_readActivePower() * (1.f / 3600.f);
+    }
+
+#ifdef PN532_USE
+    pn532_loop();
+#endif
+
     /*
      * Energize EV plug if OCPP transaction is up and running
      */
-    if (ocppPermitsCharge()) {
+    if (ocppPermitsCharge() && g_trackSmartChargingCurrent >= 10.f) {
         //OCPP set up and transaction running. Energize the EV plug here
         digitalWrite(RELAY, RELAY_ON);
+        g_relayEnabled = true;
     } else {
         //No transaction running at the moment. De-energize EV plug
         digitalWrite(RELAY, RELAY_OFF);
-    }
-
-    /*
-     * Use NFC reader to start and stop transactions
-     */
-    if (/* RFID chip detected? */ false) {
-        String idTag = "0123456789ABCD"; //e.g. idTag = RFID.readIdTag();
-
-        if (!getTransaction()) {
-            //no transaction running or preparing. Begin a new transaction
-            Serial.printf("[main] Begin Transaction with idTag %s\n", idTag.c_str());
-
-            /*
-             * Begin Transaction. The OCPP lib will prepare transaction by checking the Authorization
-             * and listen to the ConnectorPlugged Input. When the Authorization succeeds and an EV
-             * is plugged, the OCPP lib will send the StartTransaction
-             */
-            auto ret = beginTransaction(idTag.c_str());
-
-            if (ret) {
-                Serial.println(F("[main] Transaction initiated. OCPP lib will send a StartTransaction when" \
-                                 "ConnectorPlugged Input becomes true and if the Authorization succeeds"));
-            } else {
-                Serial.println(F("[main] No transaction initiated"));
-            }
-
-        } else {
-            //Transaction already initiated. Check if to stop current Tx by RFID card
-            if (idTag.equals(getTransactionIdTag())) {
-                //card matches -> user can stop Tx
-                Serial.println(F("[main] End transaction by RFID card"));
-
-                endTransaction(idTag.c_str());
-            } else {
-                Serial.println(F("[main] Cannot end transaction by RFID card (different card?)"));
-            }
-        }
+        g_relayEnabled = false;
     }
 
     //... see MicroOcpp.h for more possibilities
