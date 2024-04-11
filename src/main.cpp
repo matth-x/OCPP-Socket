@@ -106,7 +106,6 @@ void setup() {
         delay(300);
     }
 
-#if 1
     MicroOcpp::configuration_init(MicroOcpp::makeDefaultFilesystemAdapter(MicroOcpp::FilesystemOpt::Use_Mount_FormatOnFail));
 
     auto wifiSSID = MicroOcpp::declareConfiguration<const char*>("Cst_WiFiSSID", STASSID, "ws-conn.jsn", false, true);
@@ -117,13 +116,12 @@ void setup() {
     auto authKey = MicroOcpp::declareConfiguration<const char*>("AuthorizationKey", OCPP_AUTH_KEY, "ws-conn.jsn", false, true);
 
     MicroOcpp::configuration_load("ws-conn.jsn");
-#endif
 
     Serial.print(F("[main] Wait for WiFi: "));
 
 #if defined(ESP8266)
-    //WiFiMulti.addAP(wifiSSID->getString(), wifiPASS->getString());
-    WiFiMulti.addAP(STASSID, STAPSK);
+    WiFiMulti.addAP(wifiSSID->getString(), wifiPASS->getString());
+    //WiFiMulti.addAP(STASSID, STAPSK);
     while (WiFiMulti.run() != WL_CONNECTED) {
         Serial.print('.');
         delay(1000);
