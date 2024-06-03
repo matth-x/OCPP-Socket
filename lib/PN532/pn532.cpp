@@ -1,7 +1,10 @@
-// Copyright (c) 2022 ESP-PN532
+// Derivate of the PN532 driver of the OpenEVSE project:
+// see https://github.com/OpenEVSE/openevse_esp32_firmware
+// GNU General Public License (GPL) V3
 
 #include "pn532.h"
 
+#include <Arduino.h>
 #include <Wire.h>
 
 #define PN532_I2C_ADDRESS  (0x48 >> 1)
@@ -19,7 +22,7 @@
 #define MAXIMUM_UNRESPONSIVE_TIME  60000UL //after this period the pn532 is considered offline
 #define AUTO_REFRESH_CONNECTION         30 //after this number of polls, the connection to the PN532 will be refreshed
 
-std::function<void(String)> onCardDetected = [] (String) {};
+std::function<void(const char*)> onCardDetected = [] (const char*) {};
 
 bool pn532_listen = false;
 bool pn532_listenAck = false;
@@ -54,10 +57,10 @@ ulong tDelay = 0;
 #define PRINTLN(...)
 #endif
 
-void pn532_init(std::function<void(String)> onReadIdTag) {
+void pn532_init(std::function<void(const char*)> onReadIdTag) {
     onCardDetected = onReadIdTag;
 
-    Wire.begin(PN532_SDA, PN532_SCL);
+    Wire.begin(PN532_SDA, PN532_CLK);
 
     pn532_configure();
 
@@ -296,7 +299,7 @@ void pn532_read() {
         PRINTLN(F(" end"));
         (void) card_type;
 
-        onCardDetected(uid);
+        onCardDetected(uid.c_str());
         pn532_hasContact = true;
 
     } else {
