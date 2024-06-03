@@ -39,7 +39,9 @@ The Sonoff Pow series devices can never be connected to a live AC wire and the p
 
 ### Limitations
 
-Due to the low RAM installed on the ESP8266, it is not possible to use TLS at the moment. See this project as a reference Socket implementation for your own designs based on the newer ESP32. It could be possible to overcome the heap shortage by switching to the [RTOS SDK](https://github.com/espressif/ESP8266_RTOS_SDK) which has more controls for fine-tuning integrated components and trying other TLS libraries (MbedTLS or WolfSSL).
+Due to the low RAM installed on the ESP8266, it is not possible to use TLS at the moment. See this project as a reference Socket implementation for your own designs based on the newer ESP32. It could be possible to overcome the heap shortage by switching to the [ESP8266 RTOS SDK](https://github.com/espressif/ESP8266_RTOS_SDK) which has more controls for fine-tuning integrated components and trying other TLS libraries (MbedTLS or WolfSSL).
+
+A further limitation is that the Wi-Fi credentials and OCPP server address are hardcoded, so that the firmware needs to be compiled again for each deployment. It's not clear which provisioning scheme is best for this device type. The obvious solution, a captive portal, could be too inflexible for larger deployments. It's left to the users of this project to integrate an appropriate solution.
 
 ### License
 
